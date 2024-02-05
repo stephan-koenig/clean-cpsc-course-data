@@ -1,0 +1,47 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/rocker-org/devcontainer-templates/tree/main/src/r-ver
+{
+  "name": "${localWorkspaceFolderBasename}",
+  "image": "ghcr.io/rocker-org/devcontainer/r-ver:4.3",
+  "features": {
+    "ghcr.io/rocker-org/devcontainer-features/r-history:0": {},
+    "ghcr.io/rocker-org/devcontainer-features/renv-cache:0": {},
+    "ghcr.io/rocker-org/devcontainer-features/apt-packages:1": {
+      // Dependencies for Quarto preview 
+      "packages": "libxt6"
+    },
+  // Uncomment to install RStudio Server
+  //   "ghcr.io/rocker-org/devcontainer-features/rstudio-server:0": {
+  //     "singleUser": true,
+  //     "version": "stable"
+  //   },
+    "ghcr.io/rocker-org/devcontainer-features/quarto-cli:1": {
+      "installTinyTex": true,
+      "installChromium": true
+    }
+  },
+  "postCreateCommand": "R -q -e 'renv::restore()'",
+
+  // Uncomment to start RStudio Server
+  // "postAttachCommand": {
+  //   "rstudio-start": "rserver"
+  // },
+  // "forwardPorts": [
+  //   8787
+  // ],
+  // "portsAttributes": {
+  //   "8787": {
+  //         "label": "RStudio IDE"
+  //   }
+  // },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "quarto.quarto"
+      ]
+    }
+  }
+
+  // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
+  // "remoteUser": "root"
+}

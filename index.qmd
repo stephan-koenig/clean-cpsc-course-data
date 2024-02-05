@@ -1,0 +1,242 @@
+---
+title: "Clean CPSC course data"
+author: "Stephan Koenig"
+date: 2024-02-05
+date-format: medium
+embed-resources: true
+format:
+  html:
+    code-tools:
+      source: https://github.com/stephan-koenig/clean-cpsc-course-data/blob/main/index.qmd
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library(conflicted)
+library(dplyr)
+conflicts_prefer(dplyr::filter)
+library(here)
+library(janitor)
+library(purrr)
+library(readxl)
+library(stringr)
+library(tidyr)
+library(writexl)
+
+process_instructor_names <- function(
+    multiple_instructors,
+    last_and_first_name_combined,
+    data) {
+  if (multiple_instructors) {
+    data <- data |> 
+      separate_longer_delim(c(last_name, first_name, rank), delim = regex(";\\s*|/"))
+  }
+  
+  if (last_and_first_name_combined) {
+    data <- data |> 
+      select(!first_name) |> 
+      separate_wider_delim(
+        last_name,
+        names = c("last_name", "first_name"),
+        delim = regex(",\\s*")
+      )
+  }
+  
+  data
+}
+
+course_counts_file    <- here("data", "raw", "course_counts_raw.xlsx")
+undergraduate_courses <- read_xlsx(course_counts_file, sheet = "undergrad")
+graduate_courses      <- read_xlsx(course_counts_file, sheet = "grad")
+```
+
+## Overview
+
+Using the data in `course_counts_raw.xlsx`:
+
+1)  For courses with multiple instructors (separated by "; ?"), separate into one row for each instructor and instance of a course.
+
+2)  Standardize the names for all persons by
+
+    a)  Fixing the instructor names using consistent capitalization, middle names and spelling.
+
+    b)  Separating first and last name if necessary (separated by "<last>, ?<first>" in the `undergrad` sheet, "<first> <last>" on `grad`).
+
+3)  Calculate the percentage of the course an instructor was responsible for (e.g., for two instructors, it is `0.5`; for three, `0.3333`, etc.).
+
+## Data
+
+### Provenance
+
+`course_counts_raw.xlsx` provided by Alla Sheffer by email on 2024-02-01:
+
+-   SHA256: `{r} cli::hash_file_sha256(course_counts_file)`
+-   Origin unknown
+
+### Cleaning
+
+```{r}
+#| label: clean-names
+
+undergraduate_courses_clean <- undergraduate_courses |> 
+  clean_names() |> 
+  rename(
+    last_name  = instructor_last_name,
+    first_name = instructor_first_name
+  ) |> 
+  mutate(
+    term = as.double(term),
+    multiple_instructors = str_detect(last_name, ";"),
+    multiple_instructors = replace_na(multiple_instructors, FALSE),
+    last_and_first_name_combined = str_detect(last_name, ","),
+    last_and_first_name_combined = replace_na(last_and_first_name_combined, FALSE),
+    # Add missing rank information
+    rank = if_else(
+      last_name == "Srinivasan;Wolfman;Feeley",
+      "Sessional/Instructor/Instructor",
+      rank
+    ),
+    program = "undergraduate"
+  ) |> 
+  relocate(program) |> 
+  nest(.by = c(multiple_instructors, last_and_first_name_combined)) |> 
+  pmap(process_instructor_names) |> 
+  list_rbind() |> 
+  mutate(
+    across(last_name:first_name, str_to_title),
+    # Fix names where title case does not apply
+    last_name = case_match(
+      last_name,
+      "Van De Panne"          ~ "van de Panne",
+      "Mochetti De Magalhaes" ~ "Mochetti de Magalhaes",
+      "Maclean"               ~ "MacLean",
+      "Mcgrenere"             ~ "McGrenere",
+      .default = last_name
+    ),
+    first_name = case_when(
+      # Used `count(last_name, first_name)` to find inconsistent first names
+      last_name == "Wolfman"  ~ "Steven",
+      last_name == "Knorr"    ~ "Edwin Max",
+      last_name == "Shepherd" ~ "Frederick Bruce",
+      .default = first_name
+    )
+  )
+
+graduate_courses_clean <- graduate_courses |> 
+  clean_names() |> 
+  rename(
+    course = courses,
+    full_name  = instructor_last_name,
+    enrolment = enrollment
+  ) |> 
+  mutate(
+    across(c(session, department), str_to_upper),
+    section = as.character(section),
+    # Used `count(full_name)` to find inconsistent names
+    full_name = case_match(
+      full_name,
+      "Mark Schmidt,CLUNE, JEFFREY" ~ "Mark Schmidt;Jeffrey Clune",
+      "Jeff Clune"                  ~ "Jeffrey Clune",
+      "Park, Mijung"                ~ "Mi Jung Park",
+      "Alex Summers"                ~ "Alexander Summers",
+      "Heather O'Brian"             ~ "Heather O'Brien",
+      "Heather O’Brien"             ~ "Heather O'Brien",
+      "Laks Laksmanan"              ~ "Laks Lakshmanan",
+      "Karon Maclean"               ~ "Karon MacLean",
+      "Frank Wood"                  ~ "Frank Donald Wood",
+      "Bruce Shepherd"              ~ "Frederick Bruce Shepherd",
+      "Robert Xiao"                 ~ "Bo Robert Xiao",
+      .default = full_name
+    ),
+    program = "graduate"
+  ) |> 
+  separate_longer_delim(full_name, delim = regex(";"))
+
+fixed_names <- undergraduate_courses_clean |> 
+  select(last_name, first_name) |> 
+  distinct() |> 
+  # Instructor names on `grad` sheet follow `<first> <last>` format
+  mutate(full_name = str_c(first_name, last_name, sep = " "))
+
+fixed_names <- 
+  # Instructors only in graduate courses
+  graduate_courses_clean |> 
+  select(full_name) |> 
+  distinct() |> 
+  anti_join(fixed_names, by = join_by(full_name)) |> 
+  separate_wider_delim(
+    full_name,
+    names = c("first_name", "last_name"),
+    delim = " ",
+    cols_remove = FALSE) |>
+  bind_rows(fixed_names)
+  
+graduate_courses_clean <- graduate_courses_clean |>
+  inner_join(fixed_names, by = join_by(full_name)) |> 
+  select(!c(full_name, instructor_first_name))
+```
+
+### Calculate percentage of courses taught by instructors
+
+```{r}
+#| label: calculate-percentage
+
+all_courses <- undergraduate_courses_clean |> 
+  bind_rows(graduate_courses_clean) |> 
+  mutate(
+    percentage = 1 / n(),
+    .by = year:section
+  )
+
+teaching_by_instructor <- all_courses |> 
+  summarize(
+    total_percentage = sum(percentage),
+    .by = c(last_name, first_name)
+  ) |> 
+  arrange(last_name, first_name)
+
+teaching_by_instructor_and_year <- all_courses |> 
+  summarize(
+    total_percentage = sum(percentage),
+    .by = c(last_name, first_name, year)
+  ) |> 
+  arrange(last_name, first_name, year)
+
+undergraduate_courses_clean <- all_courses |> 
+  filter(program == "undergraduate") |> 
+  select(!program)
+
+graduate_courses_clean <- all_courses |> 
+  filter(program == "graduate") |> 
+  select(!program)
+```
+
+### Quality check
+
+The number of undergraduate and graduate courses should be the same as the sum of percentages of courses taught by all instructors.
+
+```{r}
+#| label: quality-check
+
+nrow(undergraduate_courses) + nrow(graduate_courses) ==
+  sum(all_courses$percentage)
+```
+
+## Save data
+
+```{r}
+#| label: save-data
+
+write_xlsx(
+  list(
+    combined = all_courses,
+    teaching_by_instructor = teaching_by_instructor,
+    teaching_by_instructor_and_year = teaching_by_instructor_and_year,
+    undergrad = undergraduate_courses_clean,
+    grad = graduate_courses_clean
+  ),
+  path = here("data", "processed", "course_counts_clean.xlsx")
+)
+```
