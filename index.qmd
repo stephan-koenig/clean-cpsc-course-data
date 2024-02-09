@@ -1,7 +1,7 @@
 ---
 title: "Clean CPSC course data"
 author: "Stephan Koenig"
-date: 2024-02-05
+date: 2024-02-09
 date-format: medium
 embed-resources: true
 format:
@@ -51,13 +51,20 @@ process_instructor_names <- function(
 }
 
 summarize_teaching <- function(.data, ...) {
-  .data |> summarize(
-    total_percentage = sum(percentage),
-    total_credits_taught = sum(credits_taught),
-    sections_taught = n(),
-    different_courses_taught = n_distinct(course_department_code, course_number),
-    .by = c(...)
-  ) |> 
+  .data  |> 
+    arrange(
+      instructor_last_name, instructor_first_name, session_year, session_code
+    ) |>
+    summarize(
+      total_percentage = sum(percentage),
+      total_credits_taught = sum(credits_taught),
+      sections_taught = n(),
+      different_courses_taught = n_distinct(
+        course_department_code, course_number
+      ),
+      most_recent_rank = last(rank),
+      .by = c(...)
+    ) |> 
   arrange(...)
 }
 
@@ -251,7 +258,11 @@ graduate_courses_clean <- graduate_courses_clean |>
   select(!instructor_full_name)
 
 all_courses <- undergraduate_courses_clean |> 
-  bind_rows(graduate_courses_clean)
+  bind_rows(graduate_courses_clean) |> 
+  mutate(
+    session_code = factor(session_code, levels = c("W", "S")),
+    rank = str_to_title(rank)
+  )
 ```
 
 ### Add course credits
