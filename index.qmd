@@ -31,15 +31,18 @@ process_instructor_names <- function(
     data) {
   if (multiple_instructors) {
     data <- data |> 
-      separate_longer_delim(c(last_name, first_name, rank), delim = regex(";\\s*|/"))
+      separate_longer_delim(
+        c(instructor_last_name, instructor_first_name, rank),
+        delim = regex(";\\s*|/")
+      )
   }
   
   if (last_and_first_name_combined) {
     data <- data |> 
-      select(!first_name) |> 
+      select(!instructor_first_name) |> 
       separate_wider_delim(
-        last_name,
-        names = c("last_name", "first_name"),
+        instructor_last_name,
+        names = c("instructor_last_name", "instructor_first_name"),
         delim = regex(",\\s*")
       )
   }
@@ -47,9 +50,41 @@ process_instructor_names <- function(
   data
 }
 
+summarize_teaching <- function(.data, ...) {
+  .data |> summarize(
+    total_percentage = sum(percentage),
+    total_credits_taught = sum(credits_taught),
+    sections_taught = n(),
+    different_courses_taught = n_distinct(course_department_code, course_number),
+    .by = c(...)
+  ) |> 
+  arrange(...)
+}
+
 course_counts_file    <- here("data", "raw", "course_counts_raw.xlsx")
-undergraduate_courses <- read_xlsx(course_counts_file, sheet = "undergrad")
-graduate_courses      <- read_xlsx(course_counts_file, sheet = "grad")
+undergraduate_courses <- read_xlsx(course_counts_file, sheet = "undergrad") |>
+  clean_names()
+graduate_courses      <- read_xlsx(course_counts_file, sheet = "grad") |> 
+  clean_names()
+
+intro_cs_students_courses_file <- here(
+  "data",
+  "raw",
+  "CS.103.107.110.121.210.course.data.and.student.info_20231024.xlsx"
+)
+
+within_cs_students_courses_file <- here(
+  "data",
+  "raw",
+  "CS.programs.enrolled.students.all.courses.data_20231024.xlsx"
+)
+
+course_outcomes <-
+  bind_rows(
+    read_xlsx(intro_cs_students_courses_file),
+    read_xlsx(within_cs_students_courses_file)
+  ) |> 
+  clean_names()
 ```
 
 ## Overview
@@ -58,13 +93,15 @@ Using the data in `course_counts_raw.xlsx`:
 
 1)  For courses with multiple instructors (separated by "; ?"), separate into one row for each instructor and instance of a course.
 
-2)  Standardize the names for all persons by
+2)  Standardize the names for all instructors by
 
-    a)  Fixing the instructor names using consistent capitalization, middle names and spelling.
+    a)  Fixing the their names using consistent capitalization, middle names and spelling.
 
     b)  Separating first and last name if necessary (separated by "<last>, ?<first>" in the `undergrad` sheet, "<first> <last>" on `grad`).
 
-3)  Calculate the percentage of the course an instructor was responsible for (e.g., for two instructors, it is `0.5`; for three, `0.3333`, etc.).
+3)  Calculate the percentage of the course an instructor was responsible for (e.g., for two instructors, it is `0.5`; for three, `0.3333`, etc.) and the adjusted credits taught.
+
+4)  Add the number of sections and different courses taught.
 
 ## Data
 
@@ -75,26 +112,40 @@ Using the data in `course_counts_raw.xlsx`:
 -   SHA256: `{r} cli::hash_file_sha256(course_counts_file)`
 -   Origin unknown
 
+Provided by Zohreh Moradi on OneDriveusing script `CS103.107.110.110.121_Oct2023.R`:
+
+-   `CS.103.107.110.121.210.course.data.and.student.info_20231024.xlsx`\
+    SHA256: `{r} cli::hash_file_sha256(intro_cs_students_courses_file)`
+
+-   `CS.programs.enrolled.students.all.courses.data_20231024.xlsx`\
+    SHA256: `{r} cli::hash_file_sha256(within_cs_students_courses_file)`
+
 ### Cleaning
 
 ```{r}
-#| label: clean-names
+#| label: cleaning
 
 undergraduate_courses_clean <- undergraduate_courses |> 
-  clean_names() |> 
   rename(
-    last_name  = instructor_last_name,
-    first_name = instructor_first_name
+    session_year = year,
+    session_code = session,
+    course_department_code = department,
+    course_number = course,
+    section_number = section
   ) |> 
   mutate(
     term = as.double(term),
-    multiple_instructors = str_detect(last_name, ";"),
+    # course_number = as.numeric(str_extract(course_number, "\\d{3}")),
+    multiple_instructors = str_detect(instructor_last_name, ";"),
     multiple_instructors = replace_na(multiple_instructors, FALSE),
-    last_and_first_name_combined = str_detect(last_name, ","),
-    last_and_first_name_combined = replace_na(last_and_first_name_combined, FALSE),
+    last_and_first_name_combined = str_detect(instructor_last_name, ","),
+    last_and_first_name_combined = replace_na(
+      last_and_first_name_combined,
+      FALSE
+    ),
     # Add missing rank information
     rank = if_else(
-      last_name == "Srinivasan;Wolfman;Feeley",
+      instructor_last_name == "Srinivasan;Wolfman;Feeley",
       "Sessional/Instructor/Instructor",
       rank
     ),
@@ -105,38 +156,48 @@ undergraduate_courses_clean <- undergraduate_courses |>
   pmap(process_instructor_names) |> 
   list_rbind() |> 
   mutate(
-    across(last_name:first_name, str_to_title),
+    across(instructor_last_name:instructor_first_name, str_to_title),
     # Fix names where title case does not apply
-    last_name = case_match(
-      last_name,
+    instructor_last_name = case_match(
+      instructor_last_name,
       "Van De Panne"          ~ "van de Panne",
       "Mochetti De Magalhaes" ~ "Mochetti de Magalhaes",
       "Maclean"               ~ "MacLean",
       "Mcgrenere"             ~ "McGrenere",
-      .default = last_name
+      .default = instructor_last_name
     ),
-    first_name = case_when(
-      # Used `count(last_name, first_name)` to find inconsistent first names
-      last_name == "Wolfman"  ~ "Steven",
-      last_name == "Knorr"    ~ "Edwin Max",
-      last_name == "Shepherd" ~ "Frederick Bruce",
-      .default = first_name
+    instructor_first_name = case_when(
+      # Used `count(instructor_last_name, instructor_first_name)`
+      # to find inconsistent first names
+      instructor_last_name == "Wolfman"  ~ "Steven",
+      instructor_last_name == "Knorr"    ~ "Edwin Max",
+      instructor_last_name == "Shepherd" ~ "Frederick Bruce",
+      .default = instructor_first_name
     )
   )
 
 graduate_courses_clean <- graduate_courses |> 
-  clean_names() |> 
   rename(
-    course = courses,
-    full_name  = instructor_last_name,
+    session_year = year,
+    session_code = session,
+    course_department_code = department,
+    course_number = courses,
+    section_number = section,
+    instructor_full_name  = instructor_last_name,
     enrolment = enrollment
   ) |> 
+  select(!instructor_first_name) |> 
   mutate(
-    across(c(session, department), str_to_upper),
-    section = as.character(section),
-    # Used `count(full_name)` to find inconsistent names
-    full_name = case_match(
-      full_name,
+    across(c(session_year, session_code, course_department_code), str_to_upper),
+    section_number = as.character(section_number),
+    session_year = as.double(session_year),
+    course_number = course_number |> 
+      str_extract("\\d{3}.*") |> 
+      str_replace("//", "/"),
+    # course_number = as.numeric(str_extract(course_number, "\\d{3}")),
+    # Used `count(instructor_full_name)` to find inconsistent names
+    instructor_full_name = case_match(
+      instructor_full_name,
       "Mark Schmidt,CLUNE, JEFFREY" ~ "Mark Schmidt;Jeffrey Clune",
       "Jeff Clune"                  ~ "Jeffrey Clune",
       "Park, Mijung"                ~ "Mi Jung Park",
@@ -148,61 +209,118 @@ graduate_courses_clean <- graduate_courses |>
       "Frank Wood"                  ~ "Frank Donald Wood",
       "Bruce Shepherd"              ~ "Frederick Bruce Shepherd",
       "Robert Xiao"                 ~ "Bo Robert Xiao",
-      .default = full_name
+      .default = instructor_full_name
     ),
     program = "graduate"
   ) |> 
-  separate_longer_delim(full_name, delim = regex(";"))
+  separate_longer_delim(instructor_full_name, delim = regex(";"))
+```
+
+Use a lookup table for names.
+
+```{r}
+#| label: lookup-names
 
 fixed_names <- undergraduate_courses_clean |> 
-  select(last_name, first_name) |> 
+  select(instructor_last_name, instructor_first_name) |> 
   distinct() |> 
   # Instructor names on `grad` sheet follow `<first> <last>` format
-  mutate(full_name = str_c(first_name, last_name, sep = " "))
+  mutate(
+    instructor_full_name = str_c(
+      instructor_first_name,
+      instructor_last_name,
+      sep = " "
+    )
+  )
 
 fixed_names <- 
   # Instructors only in graduate courses
   graduate_courses_clean |> 
-  select(full_name) |> 
+  select(instructor_full_name) |> 
   distinct() |> 
-  anti_join(fixed_names, by = join_by(full_name)) |> 
+  anti_join(fixed_names, by = join_by(instructor_full_name)) |> 
   separate_wider_delim(
-    full_name,
-    names = c("first_name", "last_name"),
+    instructor_full_name,
+    names = c("instructor_first_name", "instructor_last_name"),
     delim = " ",
     cols_remove = FALSE) |>
   bind_rows(fixed_names)
   
 graduate_courses_clean <- graduate_courses_clean |>
-  inner_join(fixed_names, by = join_by(full_name)) |> 
-  select(!c(full_name, instructor_first_name))
-```
-
-### Calculate percentage of courses taught by instructors
-
-```{r}
-#| label: calculate-percentage
+  inner_join(fixed_names, by = join_by(instructor_full_name)) |> 
+  select(!instructor_full_name)
 
 all_courses <- undergraduate_courses_clean |> 
-  bind_rows(graduate_courses_clean) |> 
+  bind_rows(graduate_courses_clean)
+```
+
+### Add course credits
+
+```{r}
+#| label: course-credits
+
+taught_courses <- all_courses |> 
+  select(course_department_code, course_number) |> 
+  mutate(separated_course_number = course_number) |> 
+  separate_longer_delim(separated_course_number, delim = "/") |> 
+  distinct() |> 
+  arrange(course_department_code, course_number)
+
+credits <- course_outcomes |>
+  mutate(
+    course_number = str_c(
+      course_number,
+      str_replace_na(course_detail_code, "")
+    )
+  ) |> 
+  rename(separated_course_number = course_number) |> 
+  # Limit data range otherwise some courses are listed with different credits
+  filter(session_year >= 2016) |> 
+  distinct(course_department_code, separated_course_number, course_credits) |> 
+  inner_join(
+    taught_courses, by = join_by(course_department_code, separated_course_number)
+  ) |> 
+  arrange(
+    course_department_code,
+    course_number
+  ) |>
+  distinct(course_department_code, course_number, course_credits) |> 
+  # Manually add missing credits for new courses
+  add_row(
+    tibble::tribble(
+      ~course_department_code, ~course_number, ~course_credits,
+                       "DSCI",          "430",               3,
+                       "CPSC",         "436S",               3,
+                       "CPSC",         "536W",               3,
+                       "CPSC",         "538S",               3
+    )
+  )
+
+all_courses <- all_courses |> 
+  inner_join(
+    credits,
+    by = join_by(course_department_code, course_number)
+  ) |> 
+  relocate(course_credits, .after = section_number)
+```
+
+### Calculate statistics for instructors
+
+```{r}
+#| label: statistics
+
+all_courses <- all_courses |> 
   mutate(
     percentage = 1 / n(),
-    .by = year:section
+    credits_taught = percentage * course_credits,
+    .by = session_year:section_number
   )
 
 teaching_by_instructor <- all_courses |> 
-  summarize(
-    total_percentage = sum(percentage),
-    .by = c(last_name, first_name)
-  ) |> 
-  arrange(last_name, first_name)
+  summarize_teaching(instructor_last_name, instructor_first_name)
 
 teaching_by_instructor_and_year <- all_courses |> 
-  summarize(
-    total_percentage = sum(percentage),
-    .by = c(last_name, first_name, year)
-  ) |> 
-  arrange(last_name, first_name, year)
+  summarize_teaching(instructor_last_name, instructor_first_name, session_year)
 
 undergraduate_courses_clean <- all_courses |> 
   filter(program == "undergraduate") |> 
